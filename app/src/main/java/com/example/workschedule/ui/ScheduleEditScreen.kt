@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -28,6 +29,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -36,13 +39,70 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.workschedule.data.AppDatabase
 import com.example.workschedule.data.ConditionType
+import com.example.workschedule.data.IntervalEntity
 import com.example.workschedule.data.RuleEntity
+import com.example.workschedule.data.RuleWithIntervals
 import com.example.workschedule.data.ScheduleEntity
 import com.example.workschedule.data.ScheduleRepository
 import com.example.workschedule.domain.ConditionEvaluator
+import com.example.workschedule.domain.ConditionParams
 import com.example.workschedule.domain.ScheduleCalculator
 import kotlinx.coroutines.launch
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.Calendar
+
+// --- Saver для списка правил ---
+
+private fun ruleWithIntervalsToJson(rw: RuleWithIntervals): String {
+    val o = JSONObject()
+    o.put("id", rw.rule.id)
+    o.put("scheduleId", rw.rule.scheduleId)
+    o.put("conditionType", rw.rule.conditionType.name)
+    o.put("conditionParams", rw.rule.conditionParams)
+    val intervals = JSONArray()
+    rw.intervals.forEach { iv ->
+        intervals.put(JSONObject().apply {
+            put("id", iv.id)
+            put("ruleId", iv.ruleId)
+            put("startMinutes", iv.startMinutes)
+            put("durationMinutes", iv.durationMinutes)
+            put("isBreak", iv.isBreak)
+            put("orderIndex", iv.orderIndex)
+        })
+    }
+    o.put("intervals", intervals)
+    return o.toString()
+}
+
+private fun ruleWithIntervalsFromJson(json: String): RuleWithIntervals {
+    val o = JSONObject(json)
+    val rule = RuleEntity(
+        id = o.getLong("id"),
+        scheduleId = o.getLong("scheduleId"),
+        conditionType = ConditionType.valueOf(o.getString("conditionType")),
+        conditionParams = o.getString("conditionParams")
+    )
+    val intervals = mutableListOf<IntervalEntity>()
+    val arr = o.getJSONArray("intervals")
+    for (i in 0 until arr.length()) {
+        val io = arr.getJSONObject(i)
+        intervals += IntervalEntity(
+            id = io.getLong("id"),
+            ruleId = io.getLong("ruleId"),
+            startMinutes = io.getInt("startMinutes"),
+            durationMinutes = io.getInt("durationMinutes"),
+            isBreak = io.getBoolean("isBreak"),
+            orderIndex = io.getInt("orderIndex")
+        )
+    }
+    return RuleWithIntervals(rule, intervals)
+}
+
+private val RulesListSaver = Saver<List<RuleWithIntervals>, ArrayList<String>>(
+    save = { list -> ArrayList(list.map { ruleWithIntervalsToJson(it) }) },
+    restore = { saved -> saved.map { ruleWithIntervalsFromJson(it) } }
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,24 +117,31 @@ fun ScheduleEditScreen(
     }
     val scope = rememberCoroutineScope()
 
-    var title by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var rules by remember { mutableStateOf(listOf<RuleEntity>()) }
-    var loaded by remember { mutableStateOf(scheduleId == 0L) }
+    // rememberSaveable — переживает поворот и смерть процесса
+    var title by rememberSaveable { mutableStateOf("") }
+    var description by rememberSaveable { mutableStateOf("") }
+    var rules by rememberSaveable(stateSaver = RulesListSaver) {
+        mutableStateOf(listOf<RuleWithIntervals>())
+    }
+    var tempIdCounter by rememberSaveable { mutableStateOf(-1L) }
 
-    var tempIdCounter by remember { mutableStateOf(-1L) }
+    // Флаг "данные уже загружены из БД". Тоже переживает поворот.
+    var loaded by rememberSaveable { mutableStateOf(false) }
 
-    // Если редактируем существующую — подгружаем. Для новой — просто ставим loaded=true.
-    LaunchedEffect(scheduleId) {
-        if (scheduleId != 0L) {
-            val s = repo.getSchedule(scheduleId)
-            if (s != null) {
-                title = s.title
-                description = s.description
+    // LaunchedEffect(Unit) перезапустится при повороте,
+    // но loaded = true (восстановился из rememberSaveable) не даст перезаписать данные.
+    LaunchedEffect(Unit) {
+        if (!loaded) {
+            if (scheduleId != 0L) {
+                val s = repo.getSchedule(scheduleId)
+                if (s != null) {
+                    title = s.title
+                    description = s.description
+                }
+                rules = repo.getRules(scheduleId)
             }
-            rules = repo.getRules(scheduleId)
+            loaded = true
         }
-        loaded = true
     }
 
     Scaffold(
@@ -111,7 +178,6 @@ fun ScheduleEditScreen(
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Название
             item {
                 OutlinedTextField(
                     value = title,
@@ -120,8 +186,6 @@ fun ScheduleEditScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-
-            // Описание
             item {
                 OutlinedTextField(
                     value = description,
@@ -130,8 +194,6 @@ fun ScheduleEditScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
             }
-
-            // Заголовок секции "Правила" + кнопка добавить
             item {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -139,35 +201,47 @@ fun ScheduleEditScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Правила", style = MaterialTheme.typography.titleMedium)
-                    Row(modifier = Modifier.weight(1f)) {}
+                    Spacer(Modifier.weight(1f))
                     Button(onClick = {
-                        // Новое правило с дефолтным типом и временем 9:00–18:00
-                        rules = rules + RuleEntity(
-                            id = tempIdCounter--,   // уникальный отрицательный id
-                            scheduleId = scheduleId,
-                            conditionType = ConditionType.WEEKDAY,
-                            conditionParams = """{"days":[1,2,3,4,5]}""",
-                            timeStartMinutes = 9 * 60,
-                            timeEndMinutes = 18 * 60
+                        val newRuleId = tempIdCounter--
+                        val defaultParams = """{"days":[1,2,3,4,5]}"""
+                        val defaultLabel = describeCondition(
+                            ConditionType.WEEKDAY,
+                            ConditionParams.parse(ConditionType.WEEKDAY, defaultParams)
+                        )
+                        rules = rules + RuleWithIntervals(
+                            rule = RuleEntity(
+                                id = newRuleId,
+                                scheduleId = scheduleId,
+                                label = defaultLabel,          // ← дефолтное название
+                                conditionType = ConditionType.WEEKDAY,
+                                conditionParams = defaultParams
+                            ),
+                            intervals = listOf(
+                                IntervalEntity(
+                                    id = tempIdCounter--,
+                                    ruleId = newRuleId,
+                                    startMinutes = 9 * 60,
+                                    durationMinutes = 9 * 60,
+                                    isBreak = false,
+                                    orderIndex = 0
+                                )
+                            )
                         )
                     }) { Text("Добавить") }
                 }
             }
-
-            // Список правил. ВАЖНО: key обязателен, иначе Compose путает состояния редакторов.
-            itemsIndexed(rules, key = { _, r -> r.id }) { idx, rule ->
+            itemsIndexed(rules, key = { _, rw -> rw.rule.id }) { idx, rw ->
                 RuleCard(
-                    rule = rule,
-                    onChange = { newRule ->
-                        rules = rules.toMutableList().also { it[idx] = newRule }
+                    rw = rw,
+                    onChange = { newRw ->
+                        rules = rules.toMutableList().also { it[idx] = newRw }
                     },
                     onRemove = {
                         rules = rules.toMutableList().also { it.removeAt(idx) }
                     }
                 )
             }
-
-            // Предпросмотр на 7 дней
             if (rules.isNotEmpty()) {
                 item { PreviewCard(rules = rules) }
             }
@@ -176,16 +250,17 @@ fun ScheduleEditScreen(
 }
 
 @Composable
-private fun PreviewCard(rules: List<RuleEntity>) {
+private fun PreviewCard(rules: List<RuleWithIntervals>) {
     val cal = Calendar.getInstance()
     val rows = (0..6).map {
         val c = cal.clone() as Calendar
         c.add(Calendar.DAY_OF_MONTH, it)
         val minutes = ScheduleCalculator.minutesForDay(rules, c)
+        val matched = rules.filter { ConditionEvaluator.matches(it.rule, c) }
         val dateStr = "%04d-%02d-%02d".format(
             c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH)
         )
-        Triple(dateStr, weekdayRu(c), minutes)
+        Triple(dateStr, minutes, matched)
     }
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -194,18 +269,19 @@ private fun PreviewCard(rules: List<RuleEntity>) {
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text("Предпросмотр (7 дней)", style = MaterialTheme.typography.titleSmall)
-            rows.forEach { (d, wd, m) ->
-                Text("$d ($wd) — ${m / 60} ч ${m % 60} мин")
+            rows.filter { it.second > 0 }.forEach { (d, m, matched) ->
+                Text("$d (${weekdayRu(d)}) — ${m / 60} ч ${m % 60} мин")
+                matched.forEach { r ->
+                    val params = ConditionParams.parse(r.rule.conditionType, r.rule.conditionParams)
+                    val autoDesc = describeCondition(r.rule.conditionType, params)/// MAKE separate describe condition  ???
+                    val title = r.rule.label.ifBlank { autoDesc }
+                    Text("    → $title", style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
     }
 }
 
-/**
- * Превью-заглушка. Обязательно без параметров.
- * Не вешай @Preview на рабочую ScheduleEditScreen — она с параметрами,
- * и студия ругается на "non-default parameters are not supported".
- */
 @Preview(showBackground = true, widthDp = 380)
 @Composable
 fun ScheduleEditScreenPreview() {
@@ -214,12 +290,20 @@ fun ScheduleEditScreenPreview() {
     }
 }
 
-private fun weekdayRu(cal: Calendar): String = when (cal.get(Calendar.DAY_OF_WEEK)) {
-    Calendar.MONDAY -> "пн"
-    Calendar.TUESDAY -> "вт"
-    Calendar.WEDNESDAY -> "ср"
-    Calendar.THURSDAY -> "чт"
-    Calendar.FRIDAY -> "пт"
-    Calendar.SATURDAY -> "сб"
-    else -> "вс"
+private fun weekdayRu(dateStr: String): String {
+    return try {
+        val parts = dateStr.split("-")
+        val cal = Calendar.getInstance().apply {
+            set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
+        }
+        when (cal.get(Calendar.DAY_OF_WEEK)) {
+            Calendar.MONDAY -> "пн"
+            Calendar.TUESDAY -> "вт"
+            Calendar.WEDNESDAY -> "ср"
+            Calendar.THURSDAY -> "чт"
+            Calendar.FRIDAY -> "пт"
+            Calendar.SATURDAY -> "сб"
+            else -> "вс"
+        }
+    } catch (_: Exception) { "?" }
 }

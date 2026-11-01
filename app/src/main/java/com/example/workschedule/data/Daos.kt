@@ -18,16 +18,23 @@ interface ScheduleDao {
 
 @Dao
 interface RuleDao {
-    @Query("SELECT * FROM rules WHERE scheduleId = :scheduleId")
-    fun observeForSchedule(scheduleId: Long): Flow<List<RuleEntity>>
+    @Transaction
+    @Query("SELECT * FROM rules WHERE scheduleId = :scheduleId ORDER BY id ASC")
+    fun observeForSchedule(scheduleId: Long): Flow<List<RuleWithIntervals>>
 
-    @Query("SELECT * FROM rules WHERE scheduleId = :scheduleId")
-    suspend fun getForSchedule(scheduleId: Long): List<RuleEntity>
+    @Transaction
+    @Query("SELECT * FROM rules WHERE scheduleId = :scheduleId ORDER BY id ASC")
+    suspend fun getForSchedule(scheduleId: Long): List<RuleWithIntervals>
 
-    @Insert suspend fun insert(r: RuleEntity): Long
-    @Update suspend fun update(r: RuleEntity)
-    @Delete suspend fun delete(r: RuleEntity)
+    @Insert suspend fun insertRule(r: RuleEntity): Long
+    @Update suspend fun updateRule(r: RuleEntity)
+    @Query("DELETE FROM rules WHERE id = :ruleId")
+    suspend fun deleteRuleById(ruleId: Long)
 
     @Query("DELETE FROM rules WHERE scheduleId = :scheduleId")
-    suspend fun deleteForSchedule(scheduleId: Long)
+    suspend fun deleteRulesForSchedule(scheduleId: Long)
+
+    @Insert suspend fun insertInterval(i: IntervalEntity): Long
+    @Query("DELETE FROM intervals WHERE ruleId = :ruleId")
+    suspend fun deleteIntervalsForRule(ruleId: Long)
 }

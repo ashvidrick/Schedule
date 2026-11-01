@@ -1,42 +1,38 @@
 package com.example.workschedule.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import com.example.workschedule.data.ConditionType
-import com.example.workschedule.data.RuleEntity
+import com.example.workschedule.data.*
 import com.example.workschedule.domain.ConditionParams
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun RuleCard(
-    rule: RuleEntity,
-    onChange: (RuleEntity) -> Unit,
+    rw: RuleWithIntervals,
+    onChange: (RuleWithIntervals) -> Unit,
     onRemove: () -> Unit
 ) {
-    // Парсим params один раз на изменение. parse() безопасен.
+    val rule = rw.rule
     val params = remember(rule.conditionType, rule.conditionParams) {
         ConditionParams.parse(rule.conditionType, rule.conditionParams)
     }
 
-    /** Обновляет params + пересобирает JSON + отправляет наверх. */
     fun updateParams(newParams: ConditionParams) {
-        onChange(rule.copy(conditionParams = ConditionParams.toJson(newParams)))
+        onChange(rw.copy(rule = rule.copy(conditionParams = ConditionParams.toJson(newParams))))
+    }
+
+    fun updateIntervals(work: List<IntervalEntity>, breaks: List<IntervalEntity>) {
+        onChange(rw.copy(intervals = work + breaks))
     }
 
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -44,7 +40,7 @@ fun RuleCard(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Заголовок с кнопкой удаления
+            // Заголовок + удалить
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Условие", style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f))
@@ -53,29 +49,55 @@ fun RuleCard(
                 }
             }
 
-            // Выбор типа условия
+            // Название правила
+            OutlinedTextField(
+                value = rule.label,
+                onValueChange = { newLabel ->
+                    onChange(rw.copy(rule = rule.copy(label = newLabel)))
+                },
+                label = { Text("Название (необязательно)") },
+                placeholder = { Text(describeCondition(rule.conditionType, params)) },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // Чекбокс "Исключение"
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Checkbox(
+                    checked = rule.isException,
+                    onCheckedChange = { checked ->
+                        onChange(rw.copy(rule = rule.copy(isException = checked)))
+                    }
+                )
+                Column {
+                    Text("Исключение", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Перекрывает другие правила. Без интервалов = закрыто.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Селектор типа
             TypeSelector(
                 current = rule.conditionType,
                 onSelect = { newType ->
-                    // Смена типа → ставим дефолтные params
-                    onChange(
-                        rule.copy(
-                            conditionType = newType,
-                            conditionParams = ConditionParams.toJson(
-                                ConditionParams.default(newType)
-                            )
-                        )
-                    )
+                    val newParams = ConditionParams.default(newType)
+                    val autoLabel = describeCondition(newType, newParams)
+                    val shouldUpdateLabel = rule.label.isBlank() ||
+                            rule.label == describeCondition(rule.conditionType, params)
+                    onChange(rw.copy(rule = rule.copy(
+                        conditionType = newType,
+                        conditionParams = ConditionParams.toJson(newParams),
+                        label = if (shouldUpdateLabel) autoLabel else rule.label
+                    )))
                 }
             )
-            // человекочитаемый промежуток
-            Text(
-                text = describeCondition(rule.conditionType, params),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary
-            )
 
-            // Диспетчер редактора
+            // Редактор параметров
             when (params) {
                 is ConditionParams.Weekdays -> WeekdayEditor(
                     selected = params.days,
@@ -107,27 +129,248 @@ fun RuleCard(
                 }
             }
 
-            // Время: два числовых поля в минутах от начала суток
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TimeField(
-                    label = "Начало",
-                    minutesOfDay = rule.timeStartMinutes,
-                    onChange = { onChange(rule.copy(timeStartMinutes = it)) },
-                    modifier = Modifier.weight(1f)
+            HorizontalDivider()
+
+            val workList = rw.intervals.filter { !it.isBreak }
+            val breakList = rw.intervals.filter { it.isBreak }
+
+            // --- Рабочие интервалы ---
+            Text("Рабочие интервалы", style = MaterialTheme.typography.titleSmall)
+            workList.forEachIndexed { idx, iv ->
+                IntervalRow(
+                    interval = iv,
+                    onChange = { newIv ->
+                        val newWork = workList.toMutableList().also { it[idx] = newIv }
+                        updateIntervals(newWork, breakList)
+                    },
+                    onRemove = {
+                        val newWork = workList.toMutableList().also { it.removeAt(idx) }
+                        updateIntervals(newWork, breakList)
+                    }
                 )
-                TimeField(
-                    label = "Конец",
-                    minutesOfDay = rule.timeEndMinutes,
-                    onChange = { onChange(rule.copy(timeEndMinutes = it)) },
-                    modifier = Modifier.weight(1f)
+            }
+            TextButton(onClick = {
+                val newIv = IntervalEntity(
+                    ruleId = rule.id,
+                    startMinutes = 9 * 60,
+                    durationMinutes = 8 * 60,
+                    isBreak = false
                 )
+                updateIntervals(workList + newIv, breakList)
+            }) { Text("+ Рабочий интервал") }
+
+            Spacer(Modifier.height(4.dp))
+
+            // --- Перерывы ---
+            Text("Перерывы", style = MaterialTheme.typography.titleSmall)
+            breakList.forEachIndexed { idx, iv ->
+                BreakRow(
+                    interval = iv,
+                    onChange = { newIv ->
+                        val newBreaks = breakList.toMutableList().also { it[idx] = newIv }
+                        updateIntervals(workList, newBreaks)
+                    },
+                    onRemove = {
+                        val newBreaks = breakList.toMutableList().also { it.removeAt(idx) }
+                        updateIntervals(workList, newBreaks)
+                    }
+                )
+            }
+            TextButton(onClick = {
+                val newIv = IntervalEntity(
+                    ruleId = rule.id,
+                    startMinutes = 14 * 60,
+                    durationMinutes = 60,
+                    isBreak = true
+                )
+                updateIntervals(workList, breakList + newIv)
+            }) { Text("+ Перерыв") }
+        }
+    }
+}
+
+/* ---------- Рабочий интервал ---------- */
+
+@Composable
+private fun IntervalRow(
+    interval: IntervalEntity,
+    onChange: (IntervalEntity) -> Unit,
+    onRemove: () -> Unit
+) {
+    val start = interval.startMinutes
+    val duration = interval.durationMinutes
+    val end = start + duration
+
+    var durationText by rememberSaveable(interval.id) {
+        mutableStateOf(duration.toString())
+    }
+
+    LaunchedEffect(duration) {
+        if (durationText != duration.toString()) {
+            durationText = duration.toString()
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // Строка 1: Название (опционально) - можно убрать, если не нужно
+        OutlinedTextField(
+            value = interval.label,
+            onValueChange = { newLabel ->
+                onChange(interval.copy(label = newLabel))
+            },
+            label = { Text("Название интервала") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        // Строка 2: Начало + Конец
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TimeField(
+                label = "Начало",
+                minutesOfDay = start,
+                onChange = { newStart ->
+                    onChange(interval.copy(startMinutes = newStart))
+                },
+                modifier = Modifier.weight(1f)
+            )
+            TimeField(
+                label = "Конец",
+                minutesOfDay = end,
+                onChange = { newEnd ->
+                    val newDuration = newEnd - start
+                    if (newDuration > 0) {
+                        onChange(interval.copy(durationMinutes = newDuration))
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        // Строка 3: Интервал (текст) + удаление
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "${formatMinutes(start)} – ${formatMinutes(end)} (${formatDurationCard(duration)})",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onRemove) {
+                Icon(Icons.Default.Delete, contentDescription = "Удалить")
             }
         }
     }
 }
 
+/* ---------- Перерыв ---------- */
 
-private fun describeCondition(type: ConditionType, params: ConditionParams): String {
+@Composable
+private fun BreakRow(
+    interval: IntervalEntity,
+    onChange: (IntervalEntity) -> Unit,
+    onRemove: () -> Unit
+) {
+    val start = interval.startMinutes
+    val duration = interval.durationMinutes
+    val end = start + duration
+
+    var durationText by rememberSaveable(interval.id) {
+        mutableStateOf(duration.toString())
+    }
+
+    LaunchedEffect(duration) {
+        if (durationText != duration.toString()) {
+            durationText = duration.toString()
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        // Строка 0: Название
+        OutlinedTextField(
+            value = interval.label,
+            onValueChange = { newLabel ->
+                onChange(interval.copy(label = newLabel))
+            },
+            label = { Text("Название перерыва (Обед, Тех. перерыв)") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        // Строка 1: Начало
+        TimeField(
+            label = "Начало перерыва",
+            minutesOfDay = start,
+            onChange = { newStart ->
+                onChange(interval.copy(startMinutes = newStart))
+            },
+            modifier = Modifier.fillMaxWidth(0.65f)
+        )
+
+        // Строка 2: Конец + Минуты
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            TimeField(
+                label = "Конец перерыва",
+                minutesOfDay = end,
+                onChange = { newEnd ->
+                    val newDuration = newEnd - start
+                    if (newDuration > 0) {
+                        onChange(interval.copy(durationMinutes = newDuration))
+                    }
+                },
+                modifier = Modifier.weight(0.65f)
+            )
+            OutlinedTextField(
+                value = durationText,
+                onValueChange = { txt ->
+                    durationText = txt
+                    txt.toIntOrNull()?.let { d ->
+                        if (d > 0) {
+                            onChange(interval.copy(durationMinutes = d))
+                        }
+                    }
+                },
+                label = { Text("Минут") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(0.35f)
+            )
+        }
+
+        // Строка 3: Интервал + удаление
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Интервал: ${formatMinutes(start)} – ${formatMinutes(end)} (${formatDurationCard(duration)})",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onRemove) {
+                Icon(Icons.Default.Delete, contentDescription = "Удалить перерыв")
+            }
+        }
+    }
+}
+
+/* ---------- Описания и селекторы ---------- */
+
+internal fun describeCondition(type: ConditionType, params: ConditionParams): String {
     return when (params) {
         is ConditionParams.Weekdays -> {
             val labels = listOf("Пн","Вт","Ср","Чт","Пт","Сб","Вс")
@@ -146,21 +389,16 @@ private fun describeCondition(type: ConditionType, params: ConditionParams): Str
             val labels = listOf("Пн","Вт","Ср","Чт","Пт","Сб","Вс")
             "${params.nth}-й ${labels.getOrElse(params.weekday - 1) { "?" }} месяца"
         }
-        is ConditionParams.DateRange ->
-            "С ${params.from} по ${params.to}"
+        is ConditionParams.DateRange -> "С ${params.from} по ${params.to}"
         ConditionParams.Plugin -> "Плагин"
     }
 }
-/* ---------- Селектор типа условия ---------- */
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TypeSelector(current: ConditionType, onSelect: (ConditionType) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it }
-    ) {
+    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
         OutlinedTextField(
             value = current.humanName(),
             onValueChange = {},
@@ -193,31 +431,21 @@ private fun ConditionType.humanName(): String = when (this) {
     ConditionType.PLUGIN -> "Плагин"
 }
 
-/* ---------- Редакторы ---------- */
-
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun WeekdayEditor(selected: Set<Int>, onChange: (Set<Int>) -> Unit) {
-    val days = listOf(
-        1 to "Пн", 2 to "Вт", 3 to "Ср", 4 to "Чт",
-        5 to "Пт", 6 to "Сб", 7 to "Вс"
-    )
+    val days = listOf(1 to "Пн", 2 to "Вт", 3 to "Ср", 4 to "Чт", 5 to "Пт", 6 to "Сб", 7 to "Вс")
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         days.forEach { (iso, label) ->
             val isSelected = iso in selected
             FilterChip(
                 selected = isSelected,
-                onClick = {
-                    onChange(if (isSelected) selected - iso else selected + iso)
-                },
+                onClick = { onChange(if (isSelected) selected - iso else selected + iso) },
                 label = { Text(label) },
                 leadingIcon = if (isSelected) {
                     {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = null,
-                            modifier = Modifier.size(FilterChipDefaults.IconSize)
-                        )
+                        Icon(Icons.Default.Check, contentDescription = null,
+                            modifier = Modifier.size(FilterChipDefaults.IconSize))
                     }
                 } else null,
                 colors = FilterChipDefaults.filterChipColors(
@@ -229,6 +457,7 @@ private fun WeekdayEditor(selected: Set<Int>, onChange: (Set<Int>) -> Unit) {
         }
     }
 }
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DayOfMonthEditor(selected: Set<Int>, onChange: (Set<Int>) -> Unit) {
@@ -237,18 +466,12 @@ private fun DayOfMonthEditor(selected: Set<Int>, onChange: (Set<Int>) -> Unit) {
             val isSelected = d in selected
             FilterChip(
                 selected = isSelected,
-                onClick = {
-                    onChange(if (isSelected) selected - d else selected + d)
-                },
+                onClick = { onChange(if (isSelected) selected - d else selected + d) },
                 label = { Text(d.toString()) },
                 leadingIcon = if (isSelected) {
                     {
-                        Icon(
-                            Icons.Default.Check,
-                            contentDescription = null,
-                            // Чуть меньше стандартной иконки — чтобы не раздувать чип с числом
-                            modifier = Modifier.size(14.dp)
-                        )
+                        Icon(Icons.Default.Check, contentDescription = null,
+                            modifier = Modifier.size(14.dp))
                     }
                 } else null,
                 colors = FilterChipDefaults.filterChipColors(
@@ -260,6 +483,7 @@ private fun DayOfMonthEditor(selected: Set<Int>, onChange: (Set<Int>) -> Unit) {
         }
     }
 }
+
 @Composable
 private fun EveryNDaysEditor(n: Int, offset: Int, onChange: (Int, Int) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -271,11 +495,7 @@ private fun EveryNDaysEditor(n: Int, offset: Int, onChange: (Int, Int) -> Unit) 
 @Composable
 private fun EveryNWeekdayEditor(weekday: Int, n: Int, onChange: (Int, Int) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        WeekdayDropdown(
-            current = weekday,
-            onSelect = { onChange(it, n) },
-            modifier = Modifier.weight(1f)
-        )
+        WeekdayDropdown(weekday, { onChange(it, n) }, Modifier.weight(1f))
         NumberField("N-й", n, { onChange(weekday, it) }, Modifier.weight(1f))
     }
 }
@@ -283,57 +503,27 @@ private fun EveryNWeekdayEditor(weekday: Int, n: Int, onChange: (Int, Int) -> Un
 @Composable
 private fun NthWeekdayEditor(weekday: Int, nth: Int, onChange: (Int, Int) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        NthDropdown(
-            current = nth,
-            onSelect = { onChange(weekday, it) },
-            modifier = Modifier.weight(1f)   // ← здесь weight доступен
-        )
-        WeekdayDropdown(
-            current = weekday,
-            onSelect = { onChange(it, nth) },
-            modifier = Modifier.weight(1f)
-        )
+        NthDropdown(nth, { onChange(weekday, it) }, Modifier.weight(1f))
+        WeekdayDropdown(weekday, { onChange(it, nth) }, Modifier.weight(1f))
     }
 }
+
 @Composable
 private fun DateRangeEditor(from: String, to: String, onChange: (String, String) -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
-            value = from,
-            onValueChange = { onChange(it, to) },
-            label = { Text("С (YYYY-MM-DD)") },
-            modifier = Modifier.weight(1f)
+            value = from, onValueChange = { onChange(it, to) },
+            label = { Text("С (YYYY-MM-DD)") }, modifier = Modifier.weight(1f)
         )
         OutlinedTextField(
-            value = to,
-            onValueChange = { onChange(from, it) },
-            label = { Text("По (YYYY-MM-DD)") },
-            modifier = Modifier.weight(1f)
+            value = to, onValueChange = { onChange(from, it) },
+            label = { Text("По (YYYY-MM-DD)") }, modifier = Modifier.weight(1f)
         )
     }
 }
 
 /* ---------- Мелкие компоненты ---------- */
-/*
-@Composable
-private fun TimeField(
-    label: String, value: Int,
-    onChange: (Int) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    var text by remember(value) { mutableStateOf(value.toString()) }
-    OutlinedTextField(
-        value = text,
-        onValueChange = {
-            text = it
-            it.toIntOrNull()?.let(onChange)
-        },
-        label = { Text(label) },
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = modifier
-    )
-}
-*/
+
 @Composable
 private fun NumberField(
     label: String, value: Int,
@@ -343,29 +533,22 @@ private fun NumberField(
     var text by remember(value) { mutableStateOf(value.toString()) }
     OutlinedTextField(
         value = text,
-        onValueChange = {
-            text = it
-            it.toIntOrNull()?.let(onChange)
-        },
+        onValueChange = { text = it; it.toIntOrNull()?.let(onChange) },
         label = { Text(label) },
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = modifier
     )
 }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WeekdayDropdown(
-    current: Int,
-    onSelect: (Int) -> Unit,
+    current: Int, onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val labels = listOf("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
     var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-        modifier = modifier   // ← используем переданный modifier
-    ) {
+    ExposedDropdownMenuBox(expanded, { expanded = it }, modifier = modifier) {
         OutlinedTextField(
             value = labels.getOrElse(current - 1) { "Пн" },
             onValueChange = {}, readOnly = true,
@@ -387,16 +570,11 @@ private fun WeekdayDropdown(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NthDropdown(
-    current: Int,
-    onSelect: (Int) -> Unit,
+    current: Int, onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = { expanded = it },
-        modifier = modifier
-    ) {
+    ExposedDropdownMenuBox(expanded, { expanded = it }, modifier = modifier) {
         OutlinedTextField(
             value = "${current}-й",
             onValueChange = {}, readOnly = true,
@@ -413,4 +591,14 @@ private fun NthDropdown(
             }
         }
     }
+}
+
+/**
+ * 60 → "01:00", 5 → "00:05", 90 → "01:30".
+ * В отличие от formatMinutes, всегда 2 знака для часов.
+ */
+internal fun formatDurationCard(min: Int): String {
+    val h = min / 60
+    val m = min % 60
+    return "%02d:%02d".format(h, m)
 }

@@ -10,10 +10,6 @@ data class ScheduleEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-/**
- * Одна "пара" (условие + диапазон времени).
- * У одной записи может быть несколько.
- */
 @Entity(
     tableName = "rules",
     foreignKeys = [ForeignKey(
@@ -27,10 +23,37 @@ data class ScheduleEntity(
 data class RuleEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val scheduleId: Long,
+    val label: String = "",   // ← новое
+    val isException: Boolean = false,   // ← НОВОЕ
     val conditionType: ConditionType,
-    /** JSON-строка с параметрами условия. Формат зависит от типа. */
-    val conditionParams: String,
-    /** Минуты от начала суток, напр. 9*60 = 540 */
-    val timeStartMinutes: Int,
-    val timeEndMinutes: Int
+    val conditionParams: String
+)
+
+@Entity(
+    tableName = "intervals",
+    foreignKeys = [ForeignKey(
+        entity = RuleEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["ruleId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("ruleId")]
+)
+data class IntervalEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val ruleId: Long,
+    val label: String = "",   // ← новое
+    val startMinutes: Int,
+    val durationMinutes: Int,
+    val isBreak: Boolean = false,
+    val orderIndex: Int = 0
+)
+
+data class RuleWithIntervals(
+    @Embedded val rule: RuleEntity,
+    @Relation(
+        parentColumn = "id",
+        entityColumn = "ruleId"
+    )
+    val intervals: List<IntervalEntity>
 )

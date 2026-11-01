@@ -40,7 +40,6 @@ fun TimeField(
     }
 
     if (showDialog) {
-        // state создаём один раз на время жизни диалога
         val state = rememberTimePickerState(
             initialHour = minutesOfDay / 60,
             initialMinute = minutesOfDay % 60,
@@ -67,7 +66,6 @@ fun TimeField(
     }
 }
 
-/** 540 → "9:00", 1080 → "18:00" */
 internal fun formatMinutes(min: Int): String {
     val h = min / 60
     val m = min % 60

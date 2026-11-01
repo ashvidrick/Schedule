@@ -1,0 +1,1 @@
+A simple yet fully functional application for storing the operating schedules of transport services, shops, and institutions.

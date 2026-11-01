@@ -56,6 +56,7 @@ kotlin {
 }
 
 dependencies {
+    implementation(libs.androidx.compose.foundation.layout)
     val roomVersion = "2.7.0"
     implementation(libs.androidx.room.runtime)
     implementation("androidx.room:room-ktx:$roomVersion")
